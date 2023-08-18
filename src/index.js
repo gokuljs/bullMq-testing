@@ -1,7 +1,7 @@
 import express from "express";
 import { Redis } from "ioredis";
 import { Queue } from "bullmq";
-import { Worker } from "bullmq";
+import { Worker, MetricsTime } from "bullmq";
 import path, { dirname } from "path";
 import { fileURLToPath } from "url";
 const PORT = 3000;
@@ -9,20 +9,30 @@ const QUEUE_NAME = "worker_queue";
 const SANDBOXED_WORKER_QUEUE = "sandboxed_worker_queue";
 const app = express();
 const redis = new Redis();
-const queueInstance = new Queue(QUEUE_NAME, { connection: redis });
+const queueInstance = new Queue(QUEUE_NAME, {
+    connection: redis,
+});
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const processorFile = path.join(__dirname, "workers", "test-worker.js");
+// const totalMemory = os.totalmem();
+// console.log("Total Memory (bytes):", totalMemory);
+// console.log("Total Memory (MB):", totalMemory / (1024 * 1024));
 const addJobs = async () => {
     console.log("adding jobs");
-    await queueInstance.add("job1", { number: 300 }, { priority: 2 });
-    await queueInstance.add("job2", { number: 40000 }, {
-        priority: 1,
-        attempts: 1,
-        backoff: {
-            type: "exponential",
-            delay: 1000,
+    await queueInstance.add("job1", { number: 300 }, {
+        repeat: {
+            every: 1000,
+            limit: 5,
         },
     });
+    await queueInstance.add("job3", { number: 40000000000 }, {
+        attempts: 3,
+        backoff: {
+            type: "exponential",
+            delay: 600,
+        },
+    });
+    await queueInstance.add("job5", { number: 100 });
 };
 const intensiveSort = (n) => {
     const data = [...Array(n)].map(() => Math.floor(Math.random() * 10000));
@@ -37,7 +47,21 @@ const WorkerInstance = new Worker(QUEUE_NAME, async (job) => {
     }
 }, {
     autorun: false,
-    concurrency: 10, //The concurrency factor is a worker option that determines how many jobs are allowed to be processed in parallel
+    concurrency: 1,
+    metrics: {
+        maxDataPoints: MetricsTime.ONE_HOUR,
+    },
+});
+const testInstance = new Worker(QUEUE_NAME, async (job) => {
+    if (job.data.number) {
+        return intensiveSort(job.data.number);
+    }
+}, {
+    autorun: true,
+    concurrency: 1,
+    metrics: {
+        maxDataPoints: MetricsTime.ONE_HOUR,
+    },
 });
 WorkerInstance.on("completed", (job, returnvalue) => {
     console.log("Job completed: ", job.name, returnvalue);
@@ -50,10 +74,11 @@ WorkerInstance.on("error", (err) => {
     // log the error
     console.error(err);
 });
-app.get("/trigger", (req, res) => {
-    console.log("process triggered");
-    WorkerInstance.run();
-});
+WorkerInstance.run();
+// app.get("/trigger", (req, res) => {
+//   console.log("process triggered");
+//   WorkerInstance.run();
+// });
 // Sandboxed worker
 // console.log(processorFile);
 // const sandBoxedWorker = new Worker(SANDBOXED_WORKER_QUEUE, processorFile, {
